@@ -23,6 +23,8 @@ TARGET6_SENDER = sender
 SRC6_RECEIVER = task6/receiver.c
 TARGET6_RECEIVER = receiver
 
+TARGET7 = t6
+
 all: $(TARGET1) $(TARGET2) $(TARGET4) $(TARGET5) $(TARGET6)
 
 $(TARGET1):

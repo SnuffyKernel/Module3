@@ -7,41 +7,32 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/sem.h>
 
 #define FILE_NAME "random_numbers.txt"
-
-sig_atomic_t file_accessible = 0;
-
-void handle_sigusr1(int sig) {
-    file_accessible = 0;
-}
-
-void handle_sigusr2(int sig) {
-    file_accessible = 1;
-}
 
 void error(const char *msg) {
     perror(msg);
     exit(1);
 }
 
-void child_process(int pipe_fd[], int num_numbers) {
-    
+void child_process(int pipe_fd[], int num_numbers, int semid) {
     close(pipe_fd[0]);
-
-    signal(SIGUSR1, handle_sigusr1);
-    signal(SIGUSR2, handle_sigusr2);
 
     srand(time(NULL));
 
+    struct sembuf sem_op;
+
     for (int i = 0; i < num_numbers; i++) {
 
-        printf("Child waiting for SIGUSR2 to read file\n");
-        pause();
+        printf("Child waiting to access file\n");
 
-        while (!file_accessible) { 
-            printf("Child waiting for file to be accessible\n");
-            pause();
+        sem_op.sem_num = 0;
+        sem_op.sem_op = -1;
+        sem_op.sem_flg = 0;
+        if (semop(semid, &sem_op, 1) == -1) {
+            error("semop P in child failed");
         }
 
         FILE *file = fopen(FILE_NAME, "r");
@@ -59,47 +50,66 @@ void child_process(int pipe_fd[], int num_numbers) {
         printf("Child generated random number: %d\n", random_number);
         write(pipe_fd[1], &random_number, sizeof(int));
 
+        sem_op.sem_num = 0;
+        sem_op.sem_op = 1;
+        sem_op.sem_flg = 0;
+        if (semop(semid, &sem_op, 1) == -1) {
+            error("semop V in child failed");
+        }
+
         sleep(1);
     }
 
-    close(pipe_fd[1]); 
+    close(pipe_fd[1]);
     exit(0);
 }
 
-void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid) {
-    close(pipe_fd[1]); 
+void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid, int semid) {
+    close(pipe_fd[1]);
 
     FILE *file = fopen(FILE_NAME, "w");
     if (file == NULL) {
         error("File opening failed in parent");
     }
 
+    struct sembuf sem_op;
+
     for (int i = 0; i < num_numbers; i++) {
 
-        sleep(1);
-        kill(child_pid, SIGUSR1);
+        sleep(2);
+
+        sem_op.sem_num = 0;
+        sem_op.sem_op = 1; 
+        sem_op.sem_flg = 0;
+        
+        if (semop(semid, &sem_op, 1) == -1) {
+            error("semop V in parent failed");
+        }
 
         fprintf(file, "Parent writes number %d\n", i);
         fflush(file);
 
-        printf("Parent sending SIGUSR2 to child\n");
+        printf("Parent waiting for child to finish\n");
 
-        sleep(1);
-        kill(child_pid, SIGUSR2);
+        sem_op.sem_num = 0;
+        sem_op.sem_op = -1;
+        sem_op.sem_flg = 0;
+        if (semop(semid, &sem_op, 1) == -1) {
+            error("semop P in parent failed");
+        }
+
         int received_number;
         if(read(pipe_fd[0], &received_number, sizeof(int)) == -1) {
-            perror("sdfsdf");
-            exit(EXIT_FAILURE);
+            error("Read failed in parent");
         }
         printf("Parent received number: %d\n", received_number);
         fprintf(file, "Parent received number: %d\n", received_number);
         fflush(file);
 
-        
     }
 
     fclose(file);
-    close(pipe_fd[0]); 
+    close(pipe_fd[0]);
     wait(NULL);
 }
 
@@ -118,6 +128,16 @@ int main(int argc, char *argv[]) {
     int pipe_fd[2];
     pid_t pid;
 
+    key_t key = ftok("semfile", 65);
+    int semid = semget(key, 1, 0666 | IPC_CREAT);
+    if (semid == -1) {
+        error("semget failed");
+    }
+
+    if (semctl(semid, 0, SETVAL, 0) == -1) {
+        error("semctl SETVAL failed");
+    }
+
     if (pipe(pipe_fd) == -1) {
         error("Pipe creation failed");
     }
@@ -126,10 +146,14 @@ int main(int argc, char *argv[]) {
     if (pid == -1) {
         error("Fork failed");
     }
-    if (pid == 0) { 
-        child_process(pipe_fd, num_numbers);
-    } else { 
-        parent_process(pipe_fd, num_numbers, pid);
+    if (pid == 0) {
+        child_process(pipe_fd, num_numbers, semid);
+    } else {
+        parent_process(pipe_fd, num_numbers, pid, semid);
+    }
+
+    if (semctl(semid, 0, IPC_RMID) == -1) {
+        error("semctl IPC_RMID failed");
     }
 
     return 0;

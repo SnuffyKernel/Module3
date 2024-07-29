@@ -1,48 +1,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <signal.h>
 #include <sys/types.h>
-#include <time.h>
-#include <string.h>
-#include <fcntl.h>
 #include <sys/wait.h>
+#include <time.h>
+#include <fcntl.h>
+#include <semaphore.h>
 
 #define FILE_NAME "random_numbers.txt"
-
-sig_atomic_t file_accessible = 0;
-
-void handle_sigusr1(int sig) {
-    file_accessible = 0;
-}
-
-void handle_sigusr2(int sig) {
-    file_accessible = 1;
-}
 
 void error(const char *msg) {
     perror(msg);
     exit(1);
 }
 
-void child_process(int pipe_fd[], int num_numbers) {
-    
+void child_process(int pipe_fd[], int num_numbers, sem_t *sem_parent, sem_t *sem_child) {
     close(pipe_fd[0]);
-
-    signal(SIGUSR1, handle_sigusr1);
-    signal(SIGUSR2, handle_sigusr2);
 
     srand(time(NULL));
 
     for (int i = 0; i < num_numbers; i++) {
 
-        printf("Child waiting for SIGUSR2 to read file\n");
-        pause();
-
-        while (!file_accessible) { 
-            printf("Child waiting for file to be accessible\n");
-            pause();
-        }
+        printf("Child waiting for file to be accessible\n");
+        sem_wait(sem_child);
 
         FILE *file = fopen(FILE_NAME, "r");
         if (file == NULL) {
@@ -59,15 +39,17 @@ void child_process(int pipe_fd[], int num_numbers) {
         printf("Child generated random number: %d\n", random_number);
         write(pipe_fd[1], &random_number, sizeof(int));
 
+        sem_post(sem_parent);
+
         sleep(1);
     }
 
-    close(pipe_fd[1]); 
+    close(pipe_fd[1]);
     exit(0);
 }
 
-void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid) {
-    close(pipe_fd[1]); 
+void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid, sem_t *sem_parent, sem_t *sem_child) {
+    close(pipe_fd[1]);
 
     FILE *file = fopen(FILE_NAME, "w");
     if (file == NULL) {
@@ -75,31 +57,24 @@ void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid) {
     }
 
     for (int i = 0; i < num_numbers; i++) {
-
-        sleep(1);
-        kill(child_pid, SIGUSR1);
-
+         sleep(1);
         fprintf(file, "Parent writes number %d\n", i);
         fflush(file);
 
-        printf("Parent sending SIGUSR2 to child\n");
+        sem_post(sem_child);
+        sem_wait(sem_parent); 
 
-        sleep(1);
-        kill(child_pid, SIGUSR2);
         int received_number;
-        if(read(pipe_fd[0], &received_number, sizeof(int)) == -1) {
-            perror("sdfsdf");
-            exit(EXIT_FAILURE);
-        }
+        read(pipe_fd[0], &received_number, sizeof(int));
         printf("Parent received number: %d\n", received_number);
         fprintf(file, "Parent received number: %d\n", received_number);
         fflush(file);
 
-        
+        sleep(1);
     }
 
     fclose(file);
-    close(pipe_fd[0]); 
+    close(pipe_fd[0]);
     wait(NULL);
 }
 
@@ -117,9 +92,18 @@ int main(int argc, char *argv[]) {
 
     int pipe_fd[2];
     pid_t pid;
+    sem_t sem_parent, sem_child;
 
     if (pipe(pipe_fd) == -1) {
         error("Pipe creation failed");
+    }
+
+    if (sem_init(&sem_parent, 1, 0) == -1) {
+        error("Semaphore initialization failed");
+    }
+
+    if (sem_init(&sem_child, 1, 0) == -1) {
+        error("Semaphore initialization failed");
     }
 
     pid = fork();
@@ -127,10 +111,13 @@ int main(int argc, char *argv[]) {
         error("Fork failed");
     }
     if (pid == 0) { 
-        child_process(pipe_fd, num_numbers);
+        child_process(pipe_fd, num_numbers, &sem_parent, &sem_child);
     } else { 
-        parent_process(pipe_fd, num_numbers, pid);
+        parent_process(pipe_fd, num_numbers, pid, &sem_parent, &sem_child);
     }
+
+    sem_destroy(&sem_parent);
+    sem_destroy(&sem_child);
 
     return 0;
 }
