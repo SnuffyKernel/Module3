@@ -2,13 +2,16 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/types.h>
-#include <time.h>
 #include <fcntl.h>
 #include <semaphore.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <time.h>
+
 
 #define FILE_NAME "random_numbers.txt"
-#define SEM_NAME "/file_semaphore"
+#define SEM_WRITE_NAME "/write_semaphore"
+#define SEM_READ_NAME "/read_semaphore"
 
 void error(const char *msg) {
     perror(msg);
@@ -18,9 +21,14 @@ void error(const char *msg) {
 void child_process(int pipe_fd[], int num_numbers) {
     close(pipe_fd[0]);
 
-    sem_t *sem = sem_open(SEM_NAME, 0);
-    if (sem == SEM_FAILED) {
-        error("sem_open in child failed");
+    sem_t *sem_write = sem_open(SEM_WRITE_NAME, 0);
+    if (sem_write == SEM_FAILED) {
+        error("sem_open write in child failed");
+    }
+
+    sem_t *sem_read = sem_open(SEM_READ_NAME, 0);
+    if (sem_read == SEM_FAILED) {
+        error("sem_open read in child failed");
     }
 
     srand(time(NULL));
@@ -28,8 +36,8 @@ void child_process(int pipe_fd[], int num_numbers) {
     for (int i = 0; i < num_numbers; i++) {
         printf("Child waiting to access file\n");
 
-        if (sem_wait(sem) == -1) {
-            error("sem_wait in child failed");
+        if (sem_wait(sem_read) == -1) {
+            error("sem_wait read in child failed");
         }
 
         FILE *file = fopen(FILE_NAME, "r");
@@ -43,8 +51,8 @@ void child_process(int pipe_fd[], int num_numbers) {
         }
         fclose(file);
 
-        if (sem_post(sem) == -1) {
-            error("sem_post in child failed");
+        if (sem_post(sem_read) == -1) {
+            error("sem_post read in child failed");
         }
 
         int random_number = rand() % 100;
@@ -55,17 +63,22 @@ void child_process(int pipe_fd[], int num_numbers) {
     }
 
     close(pipe_fd[1]);
-    sem_close(sem);
+    sem_close(sem_write);
+    sem_close(sem_read);
     exit(0);
 }
-
 
 void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid) {
     close(pipe_fd[1]);
 
-    sem_t *sem = sem_open(SEM_NAME, 0);
-    if (sem == SEM_FAILED) {
-        error("sem_open in parent failed");
+    sem_t *sem_write = sem_open(SEM_WRITE_NAME, 0);
+    if (sem_write == SEM_FAILED) {
+        error("sem_open write in parent failed");
+    }
+
+    sem_t *sem_read = sem_open(SEM_READ_NAME, 0);
+    if (sem_read == SEM_FAILED) {
+        error("sem_open read in parent failed");
     }
 
     FILE *file = fopen(FILE_NAME, "w");
@@ -76,15 +89,15 @@ void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid) {
     for (int i = 0; i < num_numbers; i++) {
         sleep(1);
 
-        if (sem_wait(sem) == -1) {
-            error("sem_wait in parent failed");
+        if (sem_wait(sem_write) == -1) {
+            error("sem_wait write in parent failed");
         }
 
         fprintf(file, "Parent writes number %d\n", i);
         fflush(file);
 
-        if (sem_post(sem) == -1) {
-            error("sem_post in parent failed");
+        if (sem_post(sem_write) == -1) {
+            error("sem_post write in parent failed");
         }
 
         int received_number;
@@ -99,7 +112,8 @@ void parent_process(int pipe_fd[], int num_numbers, pid_t child_pid) {
     fclose(file);
     close(pipe_fd[0]);
     wait(NULL);
-    sem_close(sem);
+    sem_close(sem_write);
+    sem_close(sem_read);
 }
 
 int main(int argc, char *argv[]) {
@@ -117,9 +131,14 @@ int main(int argc, char *argv[]) {
     int pipe_fd[2];
     pid_t pid;
 
-    sem_t *sem = sem_open(SEM_NAME, O_CREAT | O_EXCL, 0666, 1);
-    if (sem == SEM_FAILED) {
-        error("sem_open");
+    sem_t *sem_write = sem_open(SEM_WRITE_NAME, O_CREAT | O_EXCL, 0644, 1);
+    if (sem_write == SEM_FAILED) {
+        error("sem_open write");
+    }
+
+    sem_t *sem_read = sem_open(SEM_READ_NAME, O_CREAT | O_EXCL, 0644, 3); // Allow up to 3 concurrent readers
+    if (sem_read == SEM_FAILED) {
+        error("sem_open read");
     }
 
     if (pipe(pipe_fd) == -1) {
@@ -136,7 +155,8 @@ int main(int argc, char *argv[]) {
         parent_process(pipe_fd, num_numbers, pid);
     }
 
-    sem_unlink(SEM_NAME);
+    sem_unlink(SEM_WRITE_NAME);
+    sem_unlink(SEM_READ_NAME);
 
     return 0;
 }
