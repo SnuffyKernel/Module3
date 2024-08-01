@@ -5,60 +5,34 @@
 #include <arpa/inet.h>
 
 #define PORT 8080
-#define MAXLINE 1024
-
-void error(const char *msg) {
-    perror(msg);
-    exit(EXIT_FAILURE);
-}
+#define BUFFER_SIZE 1024
 
 int main() {
     int sockfd;
-    char buffer[MAXLINE];
-    struct sockaddr_in servaddr, cliaddr1, cliaddr2;
-    socklen_t len1, len2;
-    int cli1_ready = 0, cli2_ready = 0;
+    struct sockaddr_in server_addr;
+    char buffer[BUFFER_SIZE];
+    socklen_t addr_len = sizeof(server_addr);
 
     if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
-        error("socket creation failed");
+        perror("Ошибка создания сокета");
+        exit(EXIT_FAILURE);
     }
 
-    memset(&servaddr, 0, sizeof(servaddr));
-    memset(&cliaddr1, 0, sizeof(cliaddr1));
-    memset(&cliaddr2, 0, sizeof(cliaddr2));
-
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = INADDR_ANY;
-    servaddr.sin_port = htons(PORT);
-
-    if (bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
-        error("bind failed");
-    }
-
-    printf("Server listening on port %d\n", PORT);
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(PORT);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
 
     while (1) {
-        if (!cli1_ready) {
-            len1 = sizeof(cliaddr1);
-            recvfrom(sockfd, buffer, MAXLINE, 0, (struct sockaddr *)&cliaddr1, &len1);
-            cli1_ready = 1;
-            printf("Client 1 connected\n");
-        }
-        
-        if (!cli2_ready) {
-            len2 = sizeof(cliaddr2);
-            recvfrom(sockfd, buffer, MAXLINE, 0, (struct sockaddr *)&cliaddr2, &len2);
-            cli2_ready = 1;
-            printf("Client 2 connected\n");
-        }
+        printf("Введите сообщение: ");
+        fgets(buffer, BUFFER_SIZE, stdin);
 
-        if (cli1_ready && cli2_ready) {
-            recvfrom(sockfd, buffer, MAXLINE, 0, (struct sockaddr *)&cliaddr1, &len1);
-            sendto(sockfd, buffer, strlen(buffer), 0, (struct sockaddr *)&cliaddr2, len2);
+        sendto(sockfd, buffer, strlen(buffer), MSG_CONFIRM, (const struct sockaddr *)&server_addr, addr_len);
+        printf("Сообщение отправлено.\n");
 
-            recvfrom(sockfd, buffer, MAXLINE, 0, (struct sockaddr *)&cliaddr2, &len2);
-            sendto(sockfd, buffer, strlen(buffer), 0, (struct sockaddr *)&cliaddr1, len1);
-        }
+        int n = recvfrom(sockfd, buffer, BUFFER_SIZE, MSG_WAITALL, (struct sockaddr *)&server_addr, &addr_len);
+        buffer[n] = '\0';
+        printf("Ответ от клиента B: %s\n", buffer);
     }
 
     close(sockfd);
